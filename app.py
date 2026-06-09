@@ -8,8 +8,6 @@ from googleapiclient.http import MediaInMemoryUpload
 
 app = Flask(__name__)
 
-# ── helpers ──────────────────────────────────────────────────────────────────
-
 def get_drive_service():
     creds_json = os.environ["GOOGLE_CREDENTIALS"]
     creds_info = json.loads(creds_json)
@@ -20,8 +18,17 @@ def get_drive_service():
     return build("drive", "v3", credentials=creds)
 
 
+def fetch_master_brief(drive_service, file_id: str) -> str:
+    """Fetch plain text content of a Google Doc by file ID."""
+    request = drive_service.files().export_media(
+        fileId=file_id,
+        mimeType="text/plain"
+    )
+    content = request.execute()
+    return content.decode("utf-8")
+
+
 def call_claude(master_brief: str, monthly_input: str, client_name: str, tier: str) -> str:
-    """Call Claude API and return the full content kit text."""
     client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 
     is_growth = "growth" in tier.lower()
@@ -39,8 +46,8 @@ def call_claude(master_brief: str, monthly_input: str, client_name: str, tier: s
     )
 
     extra_deliverables = (
-        "\n- 8 video scripts (short-form, 30–60 seconds each)\n"
-        "- 1 long-form blog post or email newsletter (600–900 words)"
+        "\n- 8 video scripts (short-form, 30-60 seconds each)\n"
+        "- 1 long-form blog post or email newsletter (600-900 words)"
         if is_growth else ""
     )
 
@@ -50,7 +57,7 @@ CLIENT MASTER BRIEF:
 {master_brief}
 
 MONTHLY INPUT FROM CLIENT:
-{monthly_input}
+{monthly_input if monthly_input else "No additional monthly input provided. Use the Master Brief only."}
 
 DELIVERABLES FOR THIS KIT:
 
@@ -64,7 +71,7 @@ FORMAT INSTRUCTIONS:
 - Number each caption
 - For captions, include: the caption text, 5 relevant hashtags, and a content type label
 - For the email, include the subject line on its own line labeled SUBJECT:
-- For the content calendar, list Day 1 through Day 30 with the caption number assigned to each posting day (post 4–5x per week)
+- For the content calendar, list Day 1 through Day 30 with the caption number assigned to each posting day (post 4-5x per week)
 - Write in a warm, professional, clinical tone that reflects the practice's voice from the Master Brief
 - Never make specific medical claims or guarantees
 - All promotional content must include appropriate disclaimers
@@ -80,8 +87,6 @@ Begin the kit now."""
 
 
 def create_google_doc(drive_service, title: str, content: str, folder_id: str) -> str:
-    """Create a plain-text Google Doc in the specified Drive folder."""
-    # Upload as plain text; Drive will store it as a Google Doc
     file_metadata = {
         "name": title,
         "mimeType": "application/vnd.google-apps.document",
@@ -100,27 +105,29 @@ def create_google_doc(drive_service, title: str, content: str, folder_id: str) -
     return file.get("webViewLink", "")
 
 
-# ── route ─────────────────────────────────────────────────────────────────────
-
 @app.route("/generate", methods=["POST"])
 def generate():
     data = request.get_json(force=True)
 
-    client_name   = data.get("client_name", "Client")
-    tier          = data.get("tier", "Essential")
-    master_brief  = data.get("master_brief", "")
-    monthly_input = data.get("monthly_input", "")
-    folder_id     = data.get("folder_id", os.environ.get("DRIVE_FOLDER_ID", ""))
-    month_label   = data.get("month_label", "Monthly")
+    client_name      = data.get("client_name", "Client")
+    tier             = data.get("tier", "Essential")
+    master_brief_id  = data.get("master_brief_id", "")
+    monthly_input    = data.get("monthly_input", "")
+    folder_id        = data.get("folder_id", os.environ.get("DRIVE_FOLDER_ID", ""))
+    month_label      = data.get("month_label", "Monthly")
 
-    if not master_brief:
-        return jsonify({"error": "master_brief is required"}), 400
+    if not master_brief_id:
+        return jsonify({"error": "master_brief_id is required"}), 400
 
-    # 1. Generate content with Claude
+    drive_service = get_drive_service()
+
+    # Fetch master brief from Google Drive
+    master_brief = fetch_master_brief(drive_service, master_brief_id)
+
+    # Generate content with Claude
     kit_text = call_claude(master_brief, monthly_input, client_name, tier)
 
-    # 2. Upload to Google Drive as a Google Doc
-    drive_service = get_drive_service()
+    # Upload to Google Drive as a Google Doc
     doc_title = f"{client_name} — Content Kit {month_label}"
     doc_link = create_google_doc(drive_service, doc_title, kit_text, folder_id)
 
